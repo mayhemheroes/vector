@@ -319,8 +319,9 @@ releases: "0.24.0": {
 			type: "enhancement"
 			scopes: ["aws provider"]
 			description: """
-				AWS components now allow specifying a different region to use when assuming role
-				than the region otherwise configured on the component via `auth.region`.
+				AWS components now allow specifying a region to use when assuming a role
+				via `auth.region`. By default, this will use the same region that the component is
+				configured to use via `region`.
 				"""
 			contributors: ["akutta"]
 			pr_numbers: [13838]
