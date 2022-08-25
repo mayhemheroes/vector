@@ -32,9 +32,9 @@ releases: "0.24.0": {
 		- A new `file_descriptor` source to consume input from file descriptors
 		- A new `opentelemetry` source to receive input from OpenTelemetry collectors and SDKs. Only
 		  logs are supported in this release, but support for metrics and traces are in-flight.
-		  A `opentelemetry` sink will follow.
+		  An `opentelemetry` sink will follow.
 
-		Note that this release as has a backwards incompatible data model change that users of the
+		Note that this release has a backwards incompatible data model change that users of the
 		`vector` sink and disk buffers should be aware of while upgrading. See the [note in the
 		upgrade guide](/highlights/2022-08-16-0-24-0-upgrade-guide#metric-buckets) for more
 		details.
@@ -45,7 +45,7 @@ releases: "0.24.0": {
 			type: "enhancement"
 			scopes: ["vrl", "vrl: compiler"]
 			description: """
-				The VRL compiler now rejects assignments to fields on values known not to be an
+				The VRL compiler now rejects assignments to fields on values known not to be
 				objects or arrays. For example, this now fails:
 
 				```coffeescript
@@ -88,7 +88,7 @@ releases: "0.24.0": {
 			type: "enhancement"
 			scopes: ["vrl", "vrl: stdlib"]
 			description: """
-				A `filter` function was added to VRL to allow easily remove keys from objects or
+				A `filter` function was added to VRL to allow easy removal of keys from objects or
 				elements from arrays. It can be used like:
 
 				```coffeescript
@@ -114,7 +114,7 @@ releases: "0.24.0": {
 			description: """
 				A new `gelf` codec was added for decoding/encoding
 				[GELF](https://docs.graylog.org/docs/gelf) data in Vector's sources and sinks. It
-				can be used used via `encoding.codec` on sinks and `decoding.codec` on sources, for
+				can be used via `encoding.codec` on sinks and `decoding.codec` on sources, for
 				those that support codecs.
 				"""
 			pr_numbers: [13228, 13333]
@@ -358,7 +358,7 @@ releases: "0.24.0": {
 			type: "enhancement"
 			scopes: ["internal_metrics source"]
 			description: """
-				The `internal_metrics` source now emits a `internal_metrics_cardinality` gauge
+				The `internal_metrics` source now emits an `internal_metrics_cardinality` gauge
 				indicating the cardinality of the internal metric store.
 
 				Previously we emitted `internal_metrics_cardinality_total` but this metric is
