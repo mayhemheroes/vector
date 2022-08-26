@@ -6,7 +6,9 @@ use std::{
 
 use async_stream::stream;
 use futures::{Stream, StreamExt};
+use vector_common::internal_event::{EventsReceived, EventsSent};
 use vector_config::configurable_component;
+use vector_core::ByteSizeOf;
 
 use crate::{
     config::{DataType, Input, Output, TransformConfig, TransformContext, TransformDescription},
@@ -137,10 +139,21 @@ impl TaskTransform<Event> for Aggregate {
                                 self.flush_into(&mut output);
                                 done = true;
                             }
-                            Some(event) => self.record(event),
+                            Some(event) => {
+                                emit!(EventsReceived {
+                                    count: 1,
+                                    byte_size: event.size_of()
+                                });
+                                self.record(event)
+                            },
                         }
                     }
                 };
+                emit!(EventsSent {
+                    count: output.len(),
+                    byte_size: output.size_of(),
+                    output: None,
+                });
                 for event in output.drain(..) {
                     yield event;
                 }
@@ -156,7 +169,10 @@ mod tests {
     use futures::{stream, SinkExt};
 
     use super::*;
-    use crate::event::{metric, Event, Metric};
+    use crate::{
+        event::{metric, Event, Metric},
+        test_util::components::assert_transform_compliance,
+    };
 
     #[test]
     fn generate_config() {
@@ -461,22 +477,18 @@ interval_ms = 999999
         // Queue up some events to be consumed & recorded
         let in_stream = Box::pin(stream::iter(inputs));
         // Kick off the transform process which should consume & record them
-        let mut out_stream = agg.transform_events(in_stream);
+        let out_events =
+            assert_transform_compliance(agg.transform_events(in_stream).collect::<Vec<_>>()).await;
 
-        // B/c the input stream has ended we will have gone through the `input_rx.next() => None`
-        // part of the loop and do the shutting down final flush immediately. We'll already be able
-        // to read our expected bits on the output.
-        let mut count = 0_u8;
-        while let Some(event) = out_stream.next().await {
-            count += 1;
+        assert_eq!(out_events.len(), 2);
+
+        for event in out_events {
             match event.as_metric().series().name.name.as_str() {
                 "counter_a" => assert_eq!(counter_a_summed, event),
                 "gauge_a" => assert_eq!(gauge_a_2, event),
                 _ => panic!("Unexpected metric name in aggregate output"),
             };
         }
-        // There were only 2
-        assert_eq!(2, count);
     }
 
     #[tokio::test]
@@ -518,45 +530,49 @@ interval_ms = 999999
             metric::MetricValue::Gauge { value: 43.0 },
         );
 
-        let (mut tx, rx) = futures::channel::mpsc::channel(10);
-        let mut out_stream = agg.transform_events(Box::pin(rx));
+        assert_transform_compliance(async {
+            let (mut tx, rx) = futures::channel::mpsc::channel(10);
+            let mut out_stream = agg.transform_events(Box::pin(rx));
 
-        tokio::time::pause();
+            tokio::time::pause();
 
-        // tokio interval is always immediately ready, so we poll once to make sure
-        // we trip it/set the interval in the future
-        assert_eq!(Poll::Pending, futures::poll!(out_stream.next()));
+            // tokio interval is always immediately ready, so we poll once to make sure
+            // we trip it/set the interval in the future
+            assert_eq!(Poll::Pending, futures::poll!(out_stream.next()));
 
-        // Now send our events
-        tx.send(counter_a_1).await.unwrap();
-        tx.send(counter_a_2).await.unwrap();
-        tx.send(gauge_a_1).await.unwrap();
-        tx.send(gauge_a_2.clone()).await.unwrap();
-        // We won't have flushed yet b/c the interval hasn't elapsed, so no outputs
-        assert_eq!(Poll::Pending, futures::poll!(out_stream.next()));
-        // Now fast forward time enough that our flush should trigger.
-        tokio::time::advance(Duration::from_secs(11)).await;
-        // We should have had an interval fire now and our output aggregate events should be
-        // available.
-        let mut count = 0_u8;
-        while count < 2 {
-            if let Some(event) = out_stream.next().await {
-                match event.as_metric().series().name.name.as_str() {
-                    "counter_a" => assert_eq!(counter_a_summed, event),
-                    "gauge_a" => assert_eq!(gauge_a_2, event),
-                    _ => panic!("Unexpected metric name in aggregate output"),
-                };
-                count += 1;
-            } else {
-                panic!("Unexpectedly received None in output stream");
+            // Now send our events
+            tx.send(counter_a_1).await.unwrap();
+            tx.send(counter_a_2).await.unwrap();
+            tx.send(gauge_a_1).await.unwrap();
+            tx.send(gauge_a_2.clone()).await.unwrap();
+            // We won't have flushed yet b/c the interval hasn't elapsed, so no outputs
+            assert_eq!(Poll::Pending, futures::poll!(out_stream.next()));
+            // Now fast forward time enough that our flush should trigger.
+            tokio::time::advance(Duration::from_secs(11)).await;
+
+            // We should have had an interval fire now and our output aggregate events should be
+            // available.
+            let mut count = 0_u8;
+            while count < 2 {
+                if let Some(event) = out_stream.next().await {
+                    match event.as_metric().series().name.name.as_str() {
+                        "counter_a" => assert_eq!(counter_a_summed, event),
+                        "gauge_a" => assert_eq!(gauge_a_2, event),
+                        _ => panic!("Unexpected metric name in aggregate output"),
+                    };
+                    count += 1;
+                } else {
+                    panic!("Unexpectedly received None in output stream");
+                }
             }
-        }
-        // We should be back to pending, having nothing waiting for us
-        assert_eq!(Poll::Pending, futures::poll!(out_stream.next()));
-        // Close the input stream which should trigger the shutting down flush
-        tx.disconnect();
+            // We should be back to pending, having nothing waiting for us
+            assert_eq!(Poll::Pending, futures::poll!(out_stream.next()));
+            // Close the input stream which should trigger the shutting down flush
+            tx.disconnect();
 
-        // And still nothing there
-        assert_eq!(Poll::Ready(None), futures::poll!(out_stream.next()));
+            // And still nothing there
+            assert_eq!(Poll::Ready(None), futures::poll!(out_stream.next()));
+        })
+        .await;
     }
 }
