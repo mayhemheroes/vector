@@ -1,4 +1,4 @@
-use std::{collections::HashSet, error, fmt, future::ready, pin::Pin, sync::Arc};
+use std::{collections::HashSet, error, fmt, pin::Pin, sync::Arc};
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
@@ -11,7 +11,9 @@ use serde::Deserialize;
 use snafu::ResultExt as _;
 use tokio::time::{sleep, Duration, Instant};
 use tracing::Instrument;
+use vector_common::internal_event::{EventsReceived, EventsSent};
 use vector_config::configurable_component;
+use vector_core::ByteSizeOf;
 
 use crate::{
     config::{
@@ -232,7 +234,19 @@ impl TaskTransform<Event> for Ec2MetadataTransform {
         Self: 'static,
     {
         let mut inner = self;
-        Box::pin(task.filter_map(move |event| ready(Some(inner.transform_one(event)))))
+        Box::pin(task.filter_map(move |event| {
+            emit!(EventsReceived {
+                count: 1,
+                byte_size: event.size_of()
+            });
+            let transformed = inner.transform_one(event);
+            emit!(EventsSent {
+                count: 1,
+                byte_size: transformed.size_of(),
+                output: None
+            });
+            async { Some(transformed) }
+        }))
     }
 }
 
@@ -597,7 +611,7 @@ mod integration_tests {
     use super::*;
     use crate::{
         event::{metric, EventArray, LogEvent, Metric},
-        test_util::{next_addr, trace_init},
+        test_util::{components::assert_transform_compliance, next_addr, trace_init},
     };
     use warp::Filter;
 
@@ -706,22 +720,25 @@ mod integration_tests {
         })
         .await;
 
-        let (mut tx, rx) = futures::channel::mpsc::channel(100);
-        let mut stream = transform.transform_events(Box::pin(rx));
+        assert_transform_compliance(async {
+            let (mut tx, rx) = futures::channel::mpsc::channel(100);
+            let mut stream = transform.transform_events(Box::pin(rx));
 
-        // We need to sleep to let the background task fetch the data.
-        sleep(Duration::from_secs(1)).await;
+            // We need to sleep to let the background task fetch the data.
+            sleep(Duration::from_secs(1)).await;
 
-        let log = LogEvent::default();
-        let mut expected_log = log.clone();
-        for (k, v) in expected_log_fields().iter().cloned() {
-            expected_log.insert(&k, v);
-        }
+            let log = LogEvent::default();
+            let mut expected_log = log.clone();
+            for (k, v) in expected_log_fields().iter().cloned() {
+                expected_log.insert(&k, v);
+            }
 
-        tx.send(log.into()).await.unwrap();
+            tx.send(log.into()).await.unwrap();
 
-        let event = stream.next().await.unwrap();
-        assert_eq!(event.into_log(), expected_log);
+            let event = stream.next().await.unwrap();
+            assert_eq!(event.into_log(), expected_log);
+        })
+        .await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -799,22 +816,25 @@ mod integration_tests {
         })
         .await;
 
-        let (mut tx, rx) = futures::channel::mpsc::channel(100);
-        let mut stream = transform.transform_events(Box::pin(rx));
+        assert_transform_compliance(async {
+            let (mut tx, rx) = futures::channel::mpsc::channel(100);
+            let mut stream = transform.transform_events(Box::pin(rx));
 
-        // We need to sleep to let the background task fetch the data.
-        sleep(Duration::from_secs(1)).await;
+            // We need to sleep to let the background task fetch the data.
+            sleep(Duration::from_secs(1)).await;
 
-        let metric = make_metric();
-        let mut expected_metric = metric.clone();
-        for (k, v) in expected_metric_fields().iter() {
-            expected_metric.insert_tag(k.to_string(), v.to_string());
-        }
+            let metric = make_metric();
+            let mut expected_metric = metric.clone();
+            for (k, v) in expected_metric_fields().iter() {
+                expected_metric.insert_tag(k.to_string(), v.to_string());
+            }
 
-        tx.send(metric.into()).await.unwrap();
+            tx.send(metric.into()).await.unwrap();
 
-        let event = stream.next().await.unwrap();
-        assert_eq!(event.into_metric(), expected_metric);
+            let event = stream.next().await.unwrap();
+            assert_eq!(event.into_metric(), expected_metric);
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -826,21 +846,24 @@ mod integration_tests {
         })
         .await;
 
-        let (mut tx, rx) = futures::channel::mpsc::channel(100);
-        let mut stream = transform.transform_events(Box::pin(rx));
+        assert_transform_compliance(async {
+            let (mut tx, rx) = futures::channel::mpsc::channel(100);
+            let mut stream = transform.transform_events(Box::pin(rx));
 
-        // We need to sleep to let the background task fetch the data.
-        sleep(Duration::from_secs(1)).await;
+            // We need to sleep to let the background task fetch the data.
+            sleep(Duration::from_secs(1)).await;
 
-        let log = LogEvent::default();
-        let mut expected_log = log.clone();
-        expected_log.insert(format!("\"{}\"", PUBLIC_IPV4_KEY).as_str(), "192.1.1.1");
-        expected_log.insert(format!("\"{}\"", REGION_KEY).as_str(), "us-east-1");
+            let log = LogEvent::default();
+            let mut expected_log = log.clone();
+            expected_log.insert(format!("\"{}\"", PUBLIC_IPV4_KEY).as_str(), "192.1.1.1");
+            expected_log.insert(format!("\"{}\"", REGION_KEY).as_str(), "us-east-1");
 
-        tx.send(log.into()).await.unwrap();
+            tx.send(log.into()).await.unwrap();
 
-        let event = stream.next().await.unwrap();
-        assert_eq!(event.into_log(), expected_log);
+            let event = stream.next().await.unwrap();
+            assert_eq!(event.into_log(), expected_log);
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -852,21 +875,24 @@ mod integration_tests {
         })
         .await;
 
-        let (mut tx, rx) = futures::channel::mpsc::channel(100);
-        let mut stream = transform.transform_events(Box::pin(rx));
+        assert_transform_compliance(async {
+            let (mut tx, rx) = futures::channel::mpsc::channel(100);
+            let mut stream = transform.transform_events(Box::pin(rx));
 
-        // We need to sleep to let the background task fetch the data.
-        sleep(Duration::from_secs(1)).await;
+            // We need to sleep to let the background task fetch the data.
+            sleep(Duration::from_secs(1)).await;
 
-        let metric = make_metric();
-        let mut expected_metric = metric.clone();
-        expected_metric.insert_tag(PUBLIC_IPV4_KEY.to_string(), "192.1.1.1".to_string());
-        expected_metric.insert_tag(REGION_KEY.to_string(), "us-east-1".to_string());
+            let metric = make_metric();
+            let mut expected_metric = metric.clone();
+            expected_metric.insert_tag(PUBLIC_IPV4_KEY.to_string(), "192.1.1.1".to_string());
+            expected_metric.insert_tag(REGION_KEY.to_string(), "us-east-1".to_string());
 
-        tx.send(metric.into()).await.unwrap();
+            tx.send(metric.into()).await.unwrap();
 
-        let event = stream.next().await.unwrap();
-        assert_eq!(event.into_metric(), expected_metric);
+            let event = stream.next().await.unwrap();
+            assert_eq!(event.into_metric(), expected_metric);
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -906,23 +932,26 @@ mod integration_tests {
             })
             .await;
 
-            let (mut tx, rx) = futures::channel::mpsc::channel(100);
-            let mut stream = transform.transform_events(Box::pin(rx));
+            assert_transform_compliance(async {
+                let (mut tx, rx) = futures::channel::mpsc::channel(100);
+                let mut stream = transform.transform_events(Box::pin(rx));
 
-            // We need to sleep to let the background task fetch the data.
-            sleep(Duration::from_secs(1)).await;
+                // We need to sleep to let the background task fetch the data.
+                sleep(Duration::from_secs(1)).await;
 
-            let log = LogEvent::default();
+                let log = LogEvent::default();
 
-            tx.send(log.into()).await.unwrap();
+                tx.send(log.into()).await.unwrap();
 
-            let event = stream.next().await.unwrap();
-            assert_eq!(
-                event
-                    .as_log()
-                    .get(&[BorrowedSegment::field(AVAILABILITY_ZONE_KEY)]),
-                Some(&"ww-region-1a".into())
-            );
+                let event = stream.next().await.unwrap();
+                assert_eq!(
+                    event
+                        .as_log()
+                        .get(&[BorrowedSegment::field(AVAILABILITY_ZONE_KEY)]),
+                    Some(&"ww-region-1a".into())
+                );
+            })
+            .await;
         }
     }
 
@@ -936,23 +965,26 @@ mod integration_tests {
             })
             .await;
 
-            let (mut tx, rx) = futures::channel::mpsc::channel(100);
-            let mut stream = transform.transform_events(Box::pin(rx));
+            assert_transform_compliance(async {
+                let (mut tx, rx) = futures::channel::mpsc::channel(100);
+                let mut stream = transform.transform_events(Box::pin(rx));
 
-            // We need to sleep to let the background task fetch the data.
-            sleep(Duration::from_secs(1)).await;
+                // We need to sleep to let the background task fetch the data.
+                sleep(Duration::from_secs(1)).await;
 
-            let metric = make_metric();
+                let metric = make_metric();
 
-            tx.send(metric.into()).await.unwrap();
+                tx.send(metric.into()).await.unwrap();
 
-            let event = stream.next().await.unwrap();
-            assert_eq!(
-                event
-                    .as_metric()
-                    .tag_value("ec2.metadata.availability-zone"),
-                Some("ww-region-1a".to_string())
-            );
+                let event = stream.next().await.unwrap();
+                assert_eq!(
+                    event
+                        .as_metric()
+                        .tag_value("ec2.metadata.availability-zone"),
+                    Some("ww-region-1a".to_string())
+                );
+            })
+            .await;
         }
 
         {
@@ -964,21 +996,24 @@ mod integration_tests {
             })
             .await;
 
-            let (mut tx, rx) = futures::channel::mpsc::channel(100);
-            let mut stream = transform.transform_events(Box::pin(rx));
+            assert_transform_compliance(async {
+                let (mut tx, rx) = futures::channel::mpsc::channel(100);
+                let mut stream = transform.transform_events(Box::pin(rx));
 
-            // We need to sleep to let the background task fetch the data.
-            sleep(Duration::from_secs(1)).await;
+                // We need to sleep to let the background task fetch the data.
+                sleep(Duration::from_secs(1)).await;
 
-            let metric = make_metric();
+                let metric = make_metric();
 
-            tx.send(metric.into()).await.unwrap();
+                tx.send(metric.into()).await.unwrap();
 
-            let event = stream.next().await.unwrap();
-            assert_eq!(
-                event.as_metric().tag_value(AVAILABILITY_ZONE_KEY),
-                Some("ww-region-1a".to_string())
-            );
+                let event = stream.next().await.unwrap();
+                assert_eq!(
+                    event.as_metric().tag_value(AVAILABILITY_ZONE_KEY),
+                    Some("ww-region-1a".to_string())
+                );
+            })
+            .await;
         }
     }
 }
