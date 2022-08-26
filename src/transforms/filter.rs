@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 
+use vector_common::internal_event::{EventsReceived, EventsSent};
 use vector_config::configurable_component;
+use vector_core::ByteSizeOf;
 
 use crate::{
     conditions::{AnyCondition, Condition},
@@ -92,9 +94,19 @@ impl Filter {
 
 impl FunctionTransform for Filter {
     fn transform(&mut self, output: &mut OutputBuffer, event: Event) {
+        let byte_size = event.size_of();
+        emit!(EventsReceived {
+            count: 1,
+            byte_size
+        });
         let (result, event) = self.condition.check(event);
         if result {
             output.push(event);
+            emit!(EventsSent {
+                count: 1,
+                byte_size,
+                output: None,
+            });
         } else if self.last_emission.elapsed() >= self.emissions_max_delay {
             emit!(FilterEventsDropped {
                 total: self.emissions_deferred,
@@ -110,20 +122,27 @@ impl FunctionTransform for Filter {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::event::{Event, LogEvent};
-    use crate::{conditions::Condition, transforms::test::transform_one};
+    use crate::{
+        conditions::Condition,
+        event::{Event, LogEvent},
+        test_util::components::assert_transform_compliance,
+        transforms::test::transform_one,
+    };
 
     #[test]
     fn generate_config() {
         crate::test_util::test_generate_config::<super::FilterConfig>();
     }
 
-    #[test]
-    fn passes_metadata() {
+    #[tokio::test]
+    async fn passes_metadata() {
         let mut filter = Filter::new(Condition::IsLog);
-        let event = Event::from(LogEvent::from("message"));
-        let metadata = event.metadata().clone();
-        let result = transform_one(&mut filter, event).unwrap();
-        assert_eq!(result.metadata(), &metadata);
+        assert_transform_compliance(async {
+            let event = Event::from(LogEvent::from("message"));
+            let metadata = event.metadata().clone();
+            let result = transform_one(&mut filter, event).unwrap();
+            assert_eq!(result.metadata(), &metadata);
+        })
+        .await;
     }
 }
