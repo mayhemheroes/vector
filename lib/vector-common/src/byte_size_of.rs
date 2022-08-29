@@ -70,9 +70,7 @@ where
 {
     #[inline]
     fn json_encoded_size_of(&self) -> usize {
-        let mut writer = ByteCountWriter::default();
-        let _ = serde_json::to_writer(&mut writer, self);
-        writer.bytes
+        super::json_encoded_size_of::size_of(self).unwrap()
     }
 }
 
