@@ -13,7 +13,6 @@ jobs:
   build:
     name: 'build mayhem fuzzing container'
     runs-on: ubuntu-latest
-    permissions: write-all
     steps:
     - uses: actions/checkout@v6
 
@@ -49,7 +48,6 @@ jobs:
     needs: build
     name: 'fuzz ${{ matrix.mayhemfile }}'
     runs-on: ubuntu-latest
-    permissions: write-all
     strategy:
       fail-fast: false
       matrix:
